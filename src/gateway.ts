@@ -31,7 +31,7 @@ export function startWecomAccount(ctx: ChannelGatewayContext) {
   const unregisterMessage = runtime.channel.registerPluginHttpRoute({
     pluginId: "wecom",
     accountId,
-    path: "/wecom/message",
+    path: "/plugins/wecom/message",
     handler: async (req, res) => {
       const url = new URL(req.url || "", `http://${req.headers.host}`);
 
@@ -124,7 +124,7 @@ export function startWecomAccount(ctx: ChannelGatewayContext) {
   const unregisterPoll = runtime.channel.registerPluginHttpRoute({
     pluginId: "wecom",
     accountId,
-    path: "/wecom/messages",
+    path: "/plugins/wecom/messages",
     handler: async (req, res) => {
       if (req.method !== "GET") {
         res.statusCode = 405;

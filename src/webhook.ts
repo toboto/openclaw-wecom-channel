@@ -32,7 +32,7 @@ export async function handleWecomWebhookRequest(
   const url = new URL(req.url ?? "/", "http://localhost");
 
   // Only handle /wecom/message path
-  if (url.pathname !== "/wecom/message") {
+  if (url.pathname !== "/plugins/wecom/message") {
     return false;
   }
 
