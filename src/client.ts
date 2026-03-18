@@ -8,6 +8,103 @@ export interface SimpleWecomMessage {
   mediaUrl?: string;
 }
 
+/**
+ * 企业微信消息长度限制（字节）
+ * - 文本消息: 2048 字节
+ * - Markdown 消息: 20480 字节
+ *
+ * 我们使用保守值，留出安全边界
+ */
+const WECOM_TEXT_MAX_BYTES = 2000; // 文本消息上限（留48字节安全边界）
+
+/**
+ * 计算字符串的 UTF-8 字节长度
+ */
+function getByteLength(str: string): number {
+  return Buffer.byteLength(str, "utf8");
+}
+
+/**
+ * 按字节长度拆分长消息
+ * 尽量在换行符处拆分，保持消息完整性
+ *
+ * @param text 原始文本
+ * @param maxBytes 每段最大字节数
+ * @returns 拆分后的消息数组
+ */
+function splitMessageByBytes(text: string, maxBytes: number): string[] {
+  const totalBytes = getByteLength(text);
+
+  if (totalBytes <= maxBytes) {
+    return [text];
+  }
+
+  const chunks: string[] = [];
+  let currentChunk = "";
+  let currentBytes = 0;
+
+  // 按行分割，尽量在换行处拆分
+  const lines = text.split("\n");
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const lineWithNewline = i < lines.length - 1 ? line + "\n" : line;
+    const lineBytes = getByteLength(lineWithNewline);
+
+    // 如果单行就超过限制，需要按字符拆分
+    if (lineBytes > maxBytes) {
+      // 先保存当前积累的内容
+      if (currentChunk) {
+        chunks.push(currentChunk);
+        currentChunk = "";
+        currentBytes = 0;
+      }
+
+      // 按字符拆分超长行
+      let tempLine = "";
+      let tempBytes = 0;
+
+      for (const char of lineWithNewline) {
+        const charBytes = getByteLength(char);
+
+        if (tempBytes + charBytes > maxBytes) {
+          if (tempLine) {
+            chunks.push(tempLine);
+          }
+          tempLine = char;
+          tempBytes = charBytes;
+        } else {
+          tempLine += char;
+          tempBytes += charBytes;
+        }
+      }
+
+      if (tempLine) {
+        currentChunk = tempLine;
+        currentBytes = tempBytes;
+      }
+    } else if (currentBytes + lineBytes > maxBytes) {
+      // 当前行加入后会超限，先保存当前块
+      if (currentChunk) {
+        chunks.push(currentChunk);
+      }
+      currentChunk = lineWithNewline;
+      currentBytes = lineBytes;
+    } else {
+      // 当前行可以加入当前块
+      currentChunk += lineWithNewline;
+      currentBytes += lineBytes;
+    }
+  }
+
+  // 保存最后一块
+  if (currentChunk) {
+    chunks.push(currentChunk);
+  }
+
+  return chunks;
+}
+
 export class SimpleWecomClient {
   private outboundQueue = new Map<string, SimpleWecomMessage[]>();
   private pendingRequests = new Map<string, ServerResponse>();
@@ -174,22 +271,32 @@ export class SimpleWecomClient {
 
             console.log("企业微信图片消息发送成功:", imageResult);
 
-            // 如果有附带文本，再发送一条文本消息
+            // 如果有附带文本，再发送文本消息（支持拆分）
             if (message.text) {
-              const textPayload = {
-                msgtype: "text" as const,
-                agentid: config.agentid,
-                touser: userId,
-                text: {
-                  content: message.text,
-                },
-              };
+              const textChunks = splitMessageByBytes(message.text, WECOM_TEXT_MAX_BYTES);
+              console.log(`[WeCom] 文本消息拆分为 ${textChunks.length} 段发送`);
 
-              await wecomOfficialAPI.sendMessage(
-                config.corpid,
-                config.corpsecret,
-                textPayload
-              );
+              for (let i = 0; i < textChunks.length; i++) {
+                const chunk = textChunks[i];
+                const textPayload = {
+                  msgtype: "text" as const,
+                  agentid: config.agentid,
+                  touser: userId,
+                  text: {
+                    content: chunk,
+                  },
+                };
+
+                await wecomOfficialAPI.sendMessage(
+                  config.corpid,
+                  config.corpsecret,
+                  textPayload
+                );
+
+                if (textChunks.length > 1) {
+                  console.log(`[WeCom] ✓ 文本消息第 ${i + 1}/${textChunks.length} 段发送成功`);
+                }
+              }
             }
 
             return; // Delivered
@@ -200,26 +307,53 @@ export class SimpleWecomClient {
           }
         }
 
-        // 发送纯文本消息
+        // 发送纯文本消息（支持拆分）
         const finalText = message.text || "";
 
-        // 构造消息payload
-        const payload = {
-          msgtype: "text" as const,
-          agentid: config.agentid,
-          touser: userId,
-          text: {
-            content: finalText,
-          },
-        };
+        // 检查是否需要拆分
+        const textBytes = getByteLength(finalText);
+        if (textBytes > WECOM_TEXT_MAX_BYTES) {
+          const textChunks = splitMessageByBytes(finalText, WECOM_TEXT_MAX_BYTES);
+          console.log(`[WeCom] 长消息 (${textBytes} 字节) 拆分为 ${textChunks.length} 段发送`);
 
-        const result = await wecomOfficialAPI.sendMessage(
-          config.corpid,
-          config.corpsecret,
-          payload
-        );
+          for (let i = 0; i < textChunks.length; i++) {
+            const chunk = textChunks[i];
+            const payload = {
+              msgtype: "text" as const,
+              agentid: config.agentid,
+              touser: userId,
+              text: {
+                content: chunk,
+              },
+            };
 
-        console.log("企业微信官方API发送成功:", result);
+            const result = await wecomOfficialAPI.sendMessage(
+              config.corpid,
+              config.corpsecret,
+              payload
+            );
+
+            console.log(`[WeCom] ✓ 消息第 ${i + 1}/${textChunks.length} 段发送成功`);
+          }
+        } else {
+          // 消息长度正常，直接发送
+          const payload = {
+            msgtype: "text" as const,
+            agentid: config.agentid,
+            touser: userId,
+            text: {
+              content: finalText,
+            },
+          };
+
+          const result = await wecomOfficialAPI.sendMessage(
+            config.corpid,
+            config.corpsecret,
+            payload
+          );
+
+          console.log("企业微信官方API发送成功:", result);
+        }
         return; // Delivered
       } catch (error) {
         console.error("企业微信官方API错误:", error);
@@ -243,6 +377,46 @@ export class SimpleWecomClient {
             : `📎 附件: ${message.mediaUrl}`;
         }
 
+        // 检查是否需要拆分
+        const textBytes = getByteLength(finalText);
+        if (textBytes > WECOM_TEXT_MAX_BYTES) {
+          const textChunks = splitMessageByBytes(finalText, WECOM_TEXT_MAX_BYTES);
+          console.log(`[WeCom] 长消息 (${textBytes} 字节) 拆分为 ${textChunks.length} 段发送`);
+
+          for (let i = 0; i < textChunks.length; i++) {
+            const chunk = textChunks[i];
+            const payload = {
+              Action: "Common.MessageWechat",
+              Namespace: namespace,
+              Token: config.weworkToken,
+              Code: config.weworkCode,
+              Data: {
+                Text: chunk
+              },
+              ToEmails: [userId]
+            };
+
+            const response = await fetch(apiUrl, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json"
+              },
+              body: JSON.stringify(payload)
+            });
+
+            if (response.ok) {
+              const result = await response.json();
+              console.log(`[WeCom] ✓ 消息第 ${i + 1}/${textChunks.length} 段发送成功`);
+            } else {
+              const errorText = await response.text();
+              console.warn(`[WeCom] 消息第 ${i + 1} 段发送失败: ${response.status}`, errorText);
+            }
+          }
+
+          return; // Delivered
+        }
+
+        // 消息长度正常，直接发送
         const payload = {
           Action: "Common.MessageWechat",
           Namespace: namespace,
