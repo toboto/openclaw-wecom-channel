@@ -1,6 +1,6 @@
 {
   "name": "@tobotorui/wecom",
-  "version": "1.6.4",
+  "version": "1.6.5",
   "type": "module",
   "description": "企业微信（WeCom）频道插件，用于 OpenClaw / Moltbot",
   "main": "index.ts",
